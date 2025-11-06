@@ -1,48 +1,58 @@
 import streamlit as st
-import requests
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
 
-BTC_THRESHOLD = 0.03  # Umbral en BTC
-st.title("Transacciones de Bitcoin > 0,03 BTC en las últimas 24h")
+st.set_page_config(page_title="Transacciones Bitcoin >0.03 BTC", layout="wide")
+st.title("Transacciones Bitcoin superiores a 0,03 BTC (últimas 24h)")
 
-# Botón para actualizar datos
-actualizar = st.button("Actualizar ahora")
+# Umbral en BTC
+umbral_btc = 0.03
 
-# Solo se ejecuta cuando se pulsa el botón
-if actualizar:
-    limite_timestamp = int((datetime.utcnow() - timedelta(days=1)).timestamp())
-
+# Función para obtener transacciones de los últimos 24h
+def obtener_transacciones():
+    url = "https://blockstream.info/api/mempool/recent"
     try:
-        # API Blockstream: últimos bloques
-        blocks = requests.get("https://blockstream.info/api/blocks").json()
+        response = requests.get(url)
+        response.raise_for_status()
+        datos = response.json()
 
-        tx_list = []
+        transacciones = []
+        ahora = datetime.utcnow()
+        hace_24h = ahora - timedelta(days=1)
 
-        for block in blocks:
-            block_time = block["timestamp"]
-            if block_time < limite_timestamp:
-                break
+        for tx in datos:
+            total_sats = sum([out["value"] for out in tx["vout"]])
+            total_btc = total_sats / 1e8  # convertir satoshis a BTC
+            timestamp = datetime.utcfromtimestamp(tx.get("status", {}).get("block_time", ahora.timestamp()))
 
-            block_hash = block["id"]
-            txs = requests.get(f"https://blockstream.info/api/block/{block_hash}/txs").json()
+            # Filtrar por última 24h y por umbral
+            if total_btc >= umbral_btc and timestamp >= hace_24h:
+                transacciones.append({
+                    "TXID": tx["txid"],
+                    "Monto (BTC)": total_btc,
+                    "Hora UTC": timestamp
+                })
 
-            for tx in txs:
-                total_out = sum(o.get("value", 0) for o in tx.get("vout", [])) / 1e8
-                if total_out >= BTC_THRESHOLD:
-                    tx_list.append({
-                        "txid": tx["txid"],
-                        "total_out_btc": total_out,
-                        "fee_btc": tx.get("fee", 0) / 1e8,
-                        "size_bytes": tx.get("size", 0),
-                        "time": datetime.utcfromtimestamp(block_time)
-                    })
-
-        if tx_list:
-            df = pd.DataFrame(tx_list)
-            st.dataframe(df)
+        if not transacciones:
+            st.info("No hay transacciones que superen el umbral en las últimas 24 horas.")
+            return pd.DataFrame()  # DataFrame vacío
         else:
-            st.info("No hay transacciones en las últimas 24h que superen 0,03 BTC.")
+            df = pd.DataFrame(transacciones)
+            df.sort_values("Monto (BTC)", ascending=False, inplace=True)
+            return df
 
     except Exception as e:
         st.error(f"Error al obtener datos: {e}")
+        return pd.DataFrame()
+
+# Botón para actualizar
+if st.button("Actualizar ahora"):
+    df_transacciones = obtener_transacciones()
+    if not df_transacciones.empty:
+        st.dataframe(df_transacciones, use_container_width=True)
+else:
+    # Mostrar al cargar la app
+    df_transacciones = obtener_transacciones()
+    if not df_transacciones.empty:
+        st.dataframe(df_transacciones, use_container_width=True)
