@@ -1,33 +1,44 @@
 import streamlit as st
 import requests
 import pandas as pd
+from datetime import datetime, timedelta
 
-URL = "https://blockchain.info/unconfirmed-transactions?format=json"
-BTC_THRESHOLD = 1  # 1 BTC
+BTC_THRESHOLD = 0.03  # Umbral en BTC
+st.title("Transacciones de Bitcoin > 0,03 BTC en las últimas 24h")
 
-st.title("Transacciones recientes con más de 1 BTC")
+# Tiempo límite: hace 24 horas
+limite_timestamp = int((datetime.utcnow() - timedelta(days=1)).timestamp())
 
 try:
-    resp = requests.get(URL)
-    resp.raise_for_status()
-    data = resp.json()
+    # API Blockstream: últimos bloques
+    blocks = requests.get("https://blockstream.info/api/blocks").json()
 
-    txs = data.get("txs", [])
-    df = pd.DataFrame([{
-        "txid": tx["hash"],
-        "total_out_btc": sum(out.get("value", 0) for out in tx.get("out", [])) / 1e8,
-        "fee_btc": tx.get("fee", 0) / 1e8,
-        "size_bytes": tx.get("size", 0),
-        "time": pd.to_datetime(tx.get("time", 0), unit='s')
-    } for tx in txs])
+    tx_list = []
 
-    # Filtrar transacciones > umbral
-    df_filtered = df[df["total_out_btc"] >= BTC_THRESHOLD]
+    for block in blocks:
+        block_time = block["timestamp"]
+        if block_time < limite_timestamp:
+            break  # Si el bloque es más antiguo de 24h, salimos
 
-    if not df_filtered.empty:
-        st.dataframe(df_filtered)
+        block_hash = block["id"]
+        txs = requests.get(f"https://blockstream.info/api/block/{block_hash}/txs").json()
+
+        for tx in txs:
+            total_out = sum(o.get("value", 0) for o in tx.get("vout", [])) / 1e8  # Satoshis → BTC
+            if total_out >= BTC_THRESHOLD:
+                tx_list.append({
+                    "txid": tx["txid"],
+                    "total_out_btc": total_out,
+                    "fee_btc": tx.get("fee", 0) / 1e8,
+                    "size_bytes": tx.get("size", 0),
+                    "time": datetime.utcfromtimestamp(block_time)
+                })
+
+    if tx_list:
+        df = pd.DataFrame(tx_list)
+        st.dataframe(df)
     else:
-        st.info("No hay transacciones que superen el umbral en este momento.")
+        st.info("No hay transacciones en las últimas 24h que superen 0,03 BTC.")
 
 except Exception as e:
     st.error(f"Error al obtener datos: {e}")
@@ -35,4 +46,3 @@ except Exception as e:
 # Botón para actualizar
 if st.button("Actualizar"):
     st.experimental_rerun()
-
