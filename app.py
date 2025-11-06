@@ -1,91 +1,48 @@
 import streamlit as st
 import pandas as pd
-import asyncio
-import websockets
-import json
+import requests
 import time
 
-st.set_page_config(page_title="BTC Mempool Live >1 BTC", layout="wide")
+st.set_page_config(page_title="BTC Mempool >1 BTC", layout="wide")
 st.title("Transacciones de Bitcoin > 1 BTC en Mempool")
 
-# ----------------------------
-# Configuración
-# ----------------------------
-BTC_THRESHOLD = 100_000_000  # 1 BTC en satoshis
+# Umbral para filtrar transacciones
+BTC_THRESHOLD = 1  # 1 BTC
 
-SEND_TO_AIRTABLE = False  # Cambiar a True si quieres enviar a Airtable
-AIRTABLE_BASE_ID = "TU_BASE_ID"  # Opcional
-AIRTABLE_API_KEY = "TU_API_KEY"
-TABLE_NAME = "Transactions"
-AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{TABLE_NAME}"
-HEADERS = {"Authorization": f"Bearer {AIRTABLE_API_KEY}", "Content-Type": "application/json"}
+# Función para obtener transacciones recientes
+@st.cache_data(ttl=10)
+def get_recent_txs():
+    try:
+        url = "https://mempool.space/api/mempool/recent"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        txs = resp.json()
+        filtered = []
+        for tx in txs:
+            # mempools.space devuelve 'vsize' y 'value' en sats
+            total_btc = tx.get("value", 0) / 1e8
+            if total_btc >= BTC_THRESHOLD:
+                filtered.append({
+                    "txid": tx["txid"],
+                    "total_btc": total_btc,
+                    "fee_sat": tx.get("fee", 0),
+                    "size_bytes": tx.get("vsize", 0),
+                    "time": pd.to_datetime(tx.get("time") * 1000, unit='ms')
+                })
+        return filtered
+    except Exception as e:
+        st.error(f"Error al obtener datos: {e}")
+        return []
 
-# ----------------------------
-# Función Airtable
-# ----------------------------
-import requests
+# Mostrar tabla en Streamlit
+st.subheader(f"Transacciones recientes con más de {BTC_THRESHOLD} BTC")
+tx_data = get_recent_txs()
+if tx_data:
+    df = pd.DataFrame(tx_data)
+    st.dataframe(df)
+else:
+    st.info("No hay transacciones que superen el umbral en este momento.")
 
-def send_to_airtable(tx):
-    record = {
-        "fields": {
-            "TXID": tx["TXID"],
-            "Total BTC": tx["Total BTC"],
-            "Fee BTC": tx["Fee BTC"],
-            "Size": tx["Size"],
-            "Time": tx["Time"]
-        }
-    }
-    response = requests.post(AIRTABLE_URL, headers=HEADERS, json=record)
-    if response.status_code not in (200, 201):
-        print("Error Airtable:", response.status_code, response.text)
-
-# ----------------------------
-# Tabla en memoria
-# ----------------------------
-tx_table = pd.DataFrame(columns=["TXID", "Total BTC", "Fee BTC", "Size", "Time"])
-placeholder = st.empty()
-
-# ----------------------------
-# Función principal
-# ----------------------------
-async def monitor_mempool():
-    global tx_table
-    url = "wss://mempool.space/api/v1/ws"
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({"op": "unconfirmed_sub"}))
-        while True:
-            message = await ws.recv()
-            data = json.loads(message)
-            if data.get("op") == "utx":
-                tx = data.get("x")
-                total_out = sum(o["value"] for o in tx.get("out", []))
-                if total_out >= BTC_THRESHOLD:
-                    tx_data = {
-                        "TXID": tx["hash"],
-                        "Total BTC": total_out / 1e8,
-                        "Fee BTC": tx["fee"] / 1e8,
-                        "Size": tx["size"],
-                        "Time": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(tx["time"]))
-                    }
-                    # Añadir a tabla
-                    tx_table = pd.concat([tx_table, pd.DataFrame([tx_data])], ignore_index=True)
-                    placeholder.dataframe(tx_table)
-
-                    if SEND_TO_AIRTABLE:
-                        send_to_airtable(tx_data)
-
-# ----------------------------
-# Botón para exportar CSV
-# ----------------------------
-if st.button("Exportar tabla a CSV"):
-    csv = tx_table.to_csv(index=False)
-    st.download_button(label="Descargar CSV", data=csv, file_name="txs_mempool.csv", mime="text/csv")
-
-# ----------------------------
-# Ejecutar la app
-# ----------------------------
-def main():
-    asyncio.run(monitor_mempool())
-
-if __name__ == "__main__":
-    main()
+# Botón para actualizar
+if st.button("Actualizar ahora"):
+    st.experimental_rerun()
